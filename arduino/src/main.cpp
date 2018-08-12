@@ -10,7 +10,7 @@ SoftwareSerial ESPSerial(WIFI_RX_PIN, WIFI_TX_PIN);
 
 void setupWifi() {
   Serial.println("Setting up WiFi...");
-  ESPSerial.begin(9600);
+  ESPSerial.begin(115200);
   ESPSerial.println("AT+CWSAP="+WIFI_SSID+","+WIFI_PASSWORD);
   /*
   ESPSerial.println("AT+CWMODE=1");
