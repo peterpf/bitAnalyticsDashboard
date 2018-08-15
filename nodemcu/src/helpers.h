@@ -10,6 +10,10 @@ void pulseIndicatorLED() {
   delay(INDICATOR_LED_PULSE_SPEED);
 }
 
+void disableIndicatorLED() {
+  digitalWrite(INDICATOR_LED_PIN, LOW);
+}
+
 void setGauge(byte *data = 0x00) {
   digitalWrite(LATCH_PIN, LOW);
   shiftOut(DATA_PIN, CLOCK_PIN, LSBFIRST, *data);
@@ -21,4 +25,8 @@ void disableGauges() {
     digitalWrite(GAUGE_PINS[i], LOW);
     setGauge();
   }
+}
+
+void log(String message) {
+  Serial.println(message);
 }
