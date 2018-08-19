@@ -3,14 +3,11 @@
 #include <ESP8266HTTPClient.h>
 
 #include <config.h>
-#include <states.h>
+#include <state.h>
 #include <helpers.h>
 
-ApplicationState appState;
-void changeState(ApplicationState state) {
-    log("Changed state: " + getStateName(appState) + " to " + getStateName(state));
-    appState = state;
-}
+ApplicationState appState = STARTUP;
+ApplicationState nextState = STARTUP;
 
 void setupUpGauges() {
   pinMode(LATCH_PIN, OUTPUT);
@@ -34,8 +31,6 @@ void setup() {
 
   setupUpGauges();
   setupIndicatorLED();
-
-  changeState(CONNECTING);
 }
 
 int gaugeIterationTimeCounter = 0;
@@ -43,13 +38,16 @@ int gaugeDataIndex = 0;
 int gaugeCountDir = 1;
 
 void iterateGauges() {
+  uint32_t startTime = millis();
   for (int i = 0; i < NUM_GAUGES; i++) {
     digitalWrite(GAUGE_PINS[i], LOW);
-    setGauge(&(STARTUP_SEQUENCE_GAUGE_DATA[gaugeDataIndex][i]));
+    byte data = STARTUP_SEQUENCE_GAUGE_DATA[gaugeDataIndex][i];
+    setGauge(&data);
     digitalWrite(GAUGE_PINS[i], HIGH);
     delay(GAUGE_SWITCHING_DELAY);
   }
-  gaugeIterationTimeCounter += GAUGE_SWITCHING_DELAY * NUM_GAUGES;
+  const int deltaTime = millis() - startTime;
+  gaugeIterationTimeCounter += deltaTime;
 
   if (gaugeIterationTimeCounter >= GAUGE_PATTERN_VIEWTIME) {
     gaugeIterationTimeCounter = 0;
@@ -61,32 +59,14 @@ void iterateGauges() {
   }
 }
 
-void sendRequest() {
-  log("Sending request...");
-  if (WiFi.status() == WL_CONNECTED) {
-    HTTPClient http;
-    http.begin(DATA_HTTP_REQUEST);
-    int httpCode = http.GET();
-
-    if (httpCode > 0) {
-      String payload = http.getString();
-      log("Received data:");
-      log(payload);
-    }else {
-      log("Error sending request.");
-    }
-    http.end();
-  }
-}
-
 /**
  * ###############
  * ## SEQUENCES ##
  * ###############
  */
 
-int sequenceTimeCounter = 0;
 int numSuccessConnected = 0;
+int numConnectionAttempts = 0;
 
 void connectingSequence() {
  if (numSuccessConnected == 0) {
@@ -94,42 +74,47 @@ void connectingSequence() {
    numSuccessConnected++;
    WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
  }
-
  pulseIndicatorLED();
+}
 
- if (WiFi.status() == WL_CONNECTED) {
-   log("Connected!");
-   disableIndicatorLED();
-   changeState(RUNNING);
- } else if (WiFi.status() == WL_CONNECT_FAILED) {
-   log("Failed to connect.");
-   changeState(PAUSING);
- }
+void afterConnectingSequence(int passedTime) {
+   if (isWiFiConnected()) {
+     log("Connected!");
+     disableIndicatorLED();
+     nextState = RUNNING;
+   } else if (didWiFiConnectionFail()) {
+     log("Failed to connect...");
+     numConnectionAttempts++;
+   }
+
+   if (numConnectionAttempts >= MAX_CONNECTION_ATTEMPTS) {
+     disableIndicatorLED();
+     nextState = PAUSING;
+   }
 }
 
 void startupSequence() {
-  uint32_t startTime = millis();
-
   iterateGauges();
+}
 
-  const int deltaTime = millis() - startTime;
-  sequenceTimeCounter += deltaTime;
-  if(sequenceTimeCounter >= STARTUP_SEQUENCE_TIME) {
-    sequenceTimeCounter = 0;
+void afterStartUpSequence(int passedTime) {
+  if(passedTime >= STARTUP_SEQUENCE_TIME) {
     disableGauges();
-    changeState(CONNECTING);
+    nextState = CONNECTING;
   }
 }
 
 void runningSequence() {
-  uint32_t startTime = millis();
+  //iterateGauges();
+}
 
-  iterateGauges();
-
-  const int deltaTime = millis() - startTime;
-  sequenceTimeCounter += deltaTime;
-  if(sequenceTimeCounter >= DATA_REFRESH_RATE) {
-    sequenceTimeCounter = 0;
+void afterRunningSequence(int passedTime) {
+  if (!isWiFiConnected()) {
+    log("Connection lost.");
+    nextState = CONNECTING;
+    return;
+  }
+  if(passedTime >= DATA_REFRESH_RATE) {
     sendRequest();
   }
 }
@@ -138,18 +123,41 @@ void pauseSequence() {
   pulseIndicatorLED();
 }
 
+
+int sequenceTimeCounter = 0;
+void (*afterSequenceRoutine)(int) = NULL;
 void loop() {
+  uint32_t startTime = millis();
+  afterSequenceRoutine = NULL;
+
   switch(appState) {
     case STARTUP:
       startupSequence();
+      afterSequenceRoutine = &afterStartUpSequence;
       break;
     case RUNNING:
       runningSequence();
+      afterSequenceRoutine = &afterRunningSequence;
       break;
     case CONNECTING:
       connectingSequence();
-      break;
+      afterSequenceRoutine = &afterConnectingSequence;
+    case PAUSING:
     default:
       pauseSequence();
+      break;
   }
+
+  const int deltaTime = millis() - startTime;
+  sequenceTimeCounter += deltaTime;
+  if (afterSequenceRoutine != NULL) {
+    afterSequenceRoutine(sequenceTimeCounter);
+  }
+
+  if (appState != nextState) {
+    log("changing state");
+    sequenceTimeCounter = 0;
+    log("State transition: " + getStateName(appState) + " to " + getStateName(nextState));
+  }
+  appState = nextState;
 }
