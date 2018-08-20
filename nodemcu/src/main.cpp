@@ -1,9 +1,11 @@
 #include <Arduino.h>
 #include <ESP8266WiFi.h>
 #include <ESP8266HTTPClient.h>
+#include <ArduinoJson.h>
 
 #include <config.h>
 #include <state.h>
+#include <requestParser.h>
 #include <helpers.h>
 
 ApplicationState appState = STARTUP;
@@ -37,17 +39,30 @@ int gaugeIterationTimeCounter = 0;
 int gaugeDataIndex = 0;
 int gaugeCountDir = 1;
 
-void iterateGauges() {
-  uint32_t startTime = millis();
+void iterateGaugesRequestData() {
   for (int i = 0; i < NUM_GAUGES; i++) {
     digitalWrite(GAUGE_PINS[i], LOW);
-    byte data = STARTUP_SEQUENCE_GAUGE_DATA[gaugeDataIndex][i];
+    byte data = gaugeDataFromRequests[i];
     setGauge(&data);
     digitalWrite(GAUGE_PINS[i], HIGH);
     delay(GAUGE_SWITCHING_DELAY);
   }
+}
+
+void iterateStartupData() {
+  uint32_t startTime = millis();
+
+  for (int i = 0; i < NUM_GAUGES; i++) {
+    digitalWrite(GAUGE_PINS[i], LOW);
+    byte singleGauge = STARTUP_SEQUENCE_GAUGE_DATA[gaugeDataIndex][i];
+    setGauge(&singleGauge);
+    digitalWrite(GAUGE_PINS[i], HIGH);
+    delay(GAUGE_SWITCHING_DELAY);
+  }
+
   const int deltaTime = millis() - startTime;
   gaugeIterationTimeCounter += deltaTime;
+
 
   if (gaugeIterationTimeCounter >= GAUGE_PATTERN_VIEWTIME) {
     gaugeIterationTimeCounter = 0;
@@ -65,6 +80,7 @@ void iterateGauges() {
  * ###############
  */
 
+bool shouldResetSequenceRunTime = false;
 int numSuccessConnected = 0;
 int numConnectionAttempts = 0;
 
@@ -94,7 +110,7 @@ void afterConnectingSequence(int passedTime) {
 }
 
 void startupSequence() {
-  iterateGauges();
+  iterateStartupData();
 }
 
 void afterStartUpSequence(int passedTime) {
@@ -105,7 +121,7 @@ void afterStartUpSequence(int passedTime) {
 }
 
 void runningSequence() {
-  //iterateGauges();
+  iterateGaugesRequestData();
 }
 
 void afterRunningSequence(int passedTime) {
@@ -115,7 +131,19 @@ void afterRunningSequence(int passedTime) {
     return;
   }
   if(passedTime >= DATA_REFRESH_RATE) {
-    sendRequest();
+    shouldResetSequenceRunTime = true;
+    RequestType type = Instances;
+    String url = URL_INSTANCES;
+    sendRequest(&url, &type);
+    type = Requests;
+    url = URL_REQUESTS_PER_MINUTE;
+    sendRequest(&url, &type);
+    type = CPU_EU;
+    url = URL_CPU_USAGE_EU;
+    sendRequest(&url, &type);
+    type = CPU_US;
+    url = URL_CPU_USAGE_US;
+    sendRequest(&url, &type);
   }
 }
 
@@ -153,9 +181,12 @@ void loop() {
   if (afterSequenceRoutine != NULL) {
     afterSequenceRoutine(sequenceTimeCounter);
   }
+  if (shouldResetSequenceRunTime) {
+    sequenceTimeCounter = 0;
+    shouldResetSequenceRunTime = false;
+  }
 
   if (appState != nextState) {
-    log("changing state");
     sequenceTimeCounter = 0;
     log("State transition: " + getStateName(appState) + " to " + getStateName(nextState));
   }
