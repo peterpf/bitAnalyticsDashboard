@@ -5,7 +5,9 @@
 
 #include <config.h>
 #include <state.h>
-#include <requestParser.h>
+#include <hardwareInterface.h>
+#include <requestTypes.h>
+#include <requestHelper.h>
 #include <helpers.h>
 
 ApplicationState appState = STARTUP;
@@ -35,56 +37,13 @@ void setup() {
   setupIndicatorLED();
 }
 
-int gaugeIterationTimeCounter = 0;
-int gaugeDataIndex = 0;
-int gaugeCountDir = 1;
-byte emptyGauge = 0;
-
-void iterateGaugesRequestData() {
-  for (int i = 0; i < NUM_GAUGES; i++) {
-    digitalWrite(GAUGE_PINS[i], LOW);
-    byte singleGauge = gaugeDataFromRequests[i];
-    setGauge(&singleGauge);
-    digitalWrite(GAUGE_PINS[i], HIGH);
-    delay(GAUGE_SWITCHING_DELAY);
-    digitalWrite(GAUGE_PINS[i], LOW);
-    setGauge(&emptyGauge);
-  }
-}
-
-void iterateStartupData() {
-  uint32_t startTime = millis();
-
-  for (int i = 0; i < NUM_GAUGES; i++) {
-    digitalWrite(GAUGE_PINS[i], LOW);
-    byte singleGauge = STARTUP_SEQUENCE_GAUGE_DATA[gaugeDataIndex][i];
-    setGauge(&singleGauge);
-    digitalWrite(GAUGE_PINS[i], HIGH);
-    delay(GAUGE_SWITCHING_DELAY);
-    digitalWrite(GAUGE_PINS[i], LOW);
-    setGauge(&emptyGauge);
-  }
-
-  const int deltaTime = millis() - startTime;
-  gaugeIterationTimeCounter += deltaTime;
-
-
-  if (gaugeIterationTimeCounter >= GAUGE_PATTERN_VIEWTIME) {
-    gaugeIterationTimeCounter = 0;
-    gaugeDataIndex += gaugeCountDir;
-
-    if (gaugeDataIndex == 0 || gaugeDataIndex == STARTUP_SEQUENCE_GAUGE_DATA_SIZE-1) {
-      gaugeCountDir *= -1;
-    }
-  }
-}
-
 /**
  * ###############
  * ## SEQUENCES ##
  * ###############
  */
 
+int sequenceTimeCounter = 0;
 bool shouldSendRequests = true;
 bool shouldResetSequenceRunTime = false;
 int numSuccessConnected = 0;
@@ -99,7 +58,7 @@ void connectingSequence() {
  pulseIndicatorLED();
 }
 
-void afterConnectingSequence(int passedTime) {
+void afterConnectingSequence(int deltaTime) {
    if (isWiFiConnected()) {
      log("Connected with IP: " + WiFi.localIP().toString());
      disableIndicatorLED();
@@ -108,7 +67,7 @@ void afterConnectingSequence(int passedTime) {
      numConnectionAttempts++;
    }
 
-   if (isWiFiConnected() && passedTime >= SEQUENCE_CONNECTING_MIN_TIME) {
+   if (isWiFiConnected() && sequenceTimeCounter >= SEQUENCE_CONNECTING_MIN_TIME) {
      nextState = RUNNING;
    }
 
@@ -118,31 +77,48 @@ void afterConnectingSequence(int passedTime) {
    }
 }
 
+int startupSequenceTimeCounter = 0;
+int startupSequenceGaugeDataIndex = 0;
+int startupSequenceDataIndexCountDirection = 1;
+
 void startupSequence() {
-  iterateStartupData();
+  iterateGauges(SEQUENCE_STARTUP_GAUGE_DATA[startupSequenceGaugeDataIndex]);
 }
 
-void afterStartUpSequence(int passedTime) {
-  if(passedTime >= STARTUP_SEQUENCE_TIME) {
+void afterStartUpSequence(int deltaTime) {
+  if(sequenceTimeCounter >= SEQUENCE_STARTUP_TIME) {
     disableGauges();
     nextState = CONNECTING;
+    return;
+  }
+
+  startupSequenceTimeCounter += deltaTime;
+
+  if (startupSequenceTimeCounter >= GAUGE_PATTERN_VIEWTIME) {
+    startupSequenceTimeCounter = 0;
+    startupSequenceGaugeDataIndex += startupSequenceDataIndexCountDirection;
+
+    if (startupSequenceGaugeDataIndex == 0 || startupSequenceGaugeDataIndex == SEQUENCE_STARTUP_GAUGE_DATA_SIZE-1) {
+      startupSequenceDataIndexCountDirection *= -1;
+    }
   }
 }
 
 void runningSequence() {
   if (!isWiFiConnected()) {
     log("Connection lost.");
+    shouldSendRequests = false;
     nextState = PAUSING;
     return;
   }
   if (shouldSendRequests) {
     sendAllRequests();
   }
-  iterateGaugesRequestData();
+  iterateGauges(gaugeDataFromRequests);
 }
 
-void afterRunningSequence(int passedTime) {
-  shouldSendRequests = passedTime >= DATA_REFRESH_RATE;
+void afterRunningSequence(int deltaTime) {
+  shouldSendRequests = sequenceTimeCounter >= DATA_REFRESH_RATE;
   if (shouldSendRequests) {
     shouldResetSequenceRunTime = true;
   }
@@ -153,24 +129,29 @@ void pauseSequence() {
 }
 
 
-int sequenceTimeCounter = 0;
-void (*afterSequenceRoutine)(int) = NULL;
+/**
+ * ###############
+ * ## MAIN LOOP ##
+ * ###############
+ */
+
+void (*postSequenceFunction)(int) = NULL;
 void loop() {
   uint32_t startTime = millis();
-  afterSequenceRoutine = NULL;
+  postSequenceFunction = NULL;
 
   switch(appState) {
     case STARTUP:
       startupSequence();
-      afterSequenceRoutine = &afterStartUpSequence;
+      postSequenceFunction = &afterStartUpSequence;
       break;
     case RUNNING:
       runningSequence();
-      afterSequenceRoutine = &afterRunningSequence;
+      postSequenceFunction = &afterRunningSequence;
       break;
     case CONNECTING:
       connectingSequence();
-      afterSequenceRoutine = &afterConnectingSequence;
+      postSequenceFunction = &afterConnectingSequence;
     case PAUSING:
     default:
       pauseSequence();
@@ -179,8 +160,8 @@ void loop() {
 
   const int deltaTime = millis() - startTime;
   sequenceTimeCounter += deltaTime;
-  if (afterSequenceRoutine != NULL) {
-    afterSequenceRoutine(sequenceTimeCounter);
+  if (postSequenceFunction != NULL) {
+    postSequenceFunction(deltaTime);
   }
   if (shouldResetSequenceRunTime) {
     sequenceTimeCounter = 0;

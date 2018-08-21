@@ -1,41 +1,3 @@
-int indicatorLEDValue = INDICATOR_LED_MIN_VALUE; // max: 255
-int indicatorLEDCountDir = 1;
-
-void pulseIndicatorLED() {
-  indicatorLEDValue += indicatorLEDCountDir;
-  if (indicatorLEDValue <= INDICATOR_LED_MIN_VALUE || indicatorLEDValue >= INDICATOR_LED_MAX_VALUE) {
-  indicatorLEDCountDir = indicatorLEDCountDir * (-1);
-  }
-  analogWrite(INDICATOR_LED_PIN, indicatorLEDValue);
-  delay(INDICATOR_LED_PULSE_SPEED);
-}
-
-void disableIndicatorLED() {
-  digitalWrite(INDICATOR_LED_PIN, LOW);
-}
-
-void setGauge(byte *data) {
-  digitalWrite(LATCH_PIN, LOW);
-  shiftOut(DATA_PIN, CLOCK_PIN, LSBFIRST, *data);
-  digitalWrite(LATCH_PIN, HIGH);
-}
-
-void disableGauges() {
-  byte emptyGauges = 0x00;
-  for (int i = 0; i < NUM_GAUGES; i++) {
-    digitalWrite(GAUGE_PINS[i], LOW);
-  }
-  setGauge(&emptyGauges);
-}
-
-bool isWiFiConnected() {
-  return WiFi.status() == WL_CONNECTED;
-}
-
-bool didWiFiConnectionFail() {
-  return WiFi.status() == WL_CONNECT_FAILED;
-}
-
 void log(String message) {
   if (LOGGING_ENABLED) {
     Serial.println(message);
@@ -43,6 +5,7 @@ void log(String message) {
 }
 
 byte gaugeDataFromRequests[NUM_GAUGES] = {0};
+
 void parseData(String *data, RequestType *type) {
   DynamicJsonBuffer  jsonBuffer(200);
   JsonObject& root = jsonBuffer.parseObject(*data);
@@ -51,25 +14,20 @@ void parseData(String *data, RequestType *type) {
     return;
   }
 
-  int offset = mapRequestTypeToGaugeDataOffset(type);
-
-  int numResultValues = 1;
-  if (*type == Instances || *type == Requests) {
-    numResultValues = 2;
-  }
-
-  double values[NUM_GAUGE_SUBSECTIONS] = {0};
+  double values[NUM_GAUGE_SUBSECTIONS]  = {0};
+  int numResultValues                   = getNumResponseValuesForRequestType(type);
   for (int i = 0; i < NUM_GAUGE_SUBSECTIONS; i++) {
-    double result = root["data"]["result"][i]["value"][1];
-    if (i >= numResultValues) {
-      result = values[i-1];
+    if (i < numResultValues) {
+      values[i] = root["data"]["result"][i]["value"][1];
+    } else {
+      values[i] = values[i-1];
     }
-    values[i] = result;
   }
 
-  int valueOne = convertValueToGaugeValue(&values[0], type);
-  int valueTwo = convertValueToGaugeValue(&values[1], type);
-  gaugeDataFromRequests[offset] = convertDataToGaugeValue(&valueOne, &valueTwo);
+  int dataIndex = *type;
+  int valueOne  = convertValueToGaugeValue(&values[0], type);
+  int valueTwo  = convertValueToGaugeValue(&values[1], type);
+  gaugeDataFromRequests[dataIndex] = convertDataToGaugeValue(&valueOne, &valueTwo);
 }
 
 void sendRequest(String *url, RequestType *type) {
@@ -92,24 +50,25 @@ void printGaugeDataFromRequests() {
     return;
   }
   String output = "";
-  for (int i = 0; i < NUM_GAUGES; i++) {
-    output += "0x"+String(gaugeDataFromRequests[i], HEX) + ", ";
+  for (int i = 0; i < NUM_GAUGES-1; i++) {
+    output += "0x" + String(gaugeDataFromRequests[i], HEX) + ", ";
   }
+  output += "0x" + String(gaugeDataFromRequests[NUM_GAUGES-1], HEX);
   log("Data: " + output);
 }
 
 void sendAllRequests() {
-  RequestType type = Instances;
-  String url = URL_INSTANCES;
+  RequestType type  = Instances;
+  String url        = URL_INSTANCES;
   sendRequest(&url, &type);
-  type = Requests;
-  url = URL_REQUESTS_PER_MINUTE;
+  type  = Requests;
+  url   = URL_REQUESTS_PER_MINUTE;
   sendRequest(&url, &type);
-  type = CPU_EU;
-  url = URL_CPU_USAGE_EU;
+  type  = CPU_EU;
+  url   = URL_CPU_USAGE_EU;
   sendRequest(&url, &type);
-  type = CPU_US;
-  url = URL_CPU_USAGE_US;
+  type  = CPU_US;
+  url   = URL_CPU_USAGE_US;
   sendRequest(&url, &type);
 
   printGaugeDataFromRequests();

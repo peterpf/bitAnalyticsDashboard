@@ -1,20 +1,3 @@
-enum RequestType {
-  Instances = 0,
-  CPU_EU = 1,
-  CPU_US = 2,
-  Requests = 3
-};
-
-int mapRequestTypeToGaugeDataOffset(RequestType *type) {
-  switch(*type){
-    case Instances: return 0;
-    case Requests: return 1;
-    case CPU_EU: return 2;
-    case CPU_US: return 3;
-    default: return 0;
-  }
-}
-
 int convertValueToGaugeValue(double *value, RequestType *type) {
   const int numLEDs = 4;
   double maxValue = 4.0;
