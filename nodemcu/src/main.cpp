@@ -38,14 +38,17 @@ void setup() {
 int gaugeIterationTimeCounter = 0;
 int gaugeDataIndex = 0;
 int gaugeCountDir = 1;
+byte emptyGauge = 0;
 
 void iterateGaugesRequestData() {
   for (int i = 0; i < NUM_GAUGES; i++) {
     digitalWrite(GAUGE_PINS[i], LOW);
-    byte data = gaugeDataFromRequests[i];
-    setGauge(&data);
+    byte singleGauge = gaugeDataFromRequests[i];
+    setGauge(&singleGauge);
     digitalWrite(GAUGE_PINS[i], HIGH);
     delay(GAUGE_SWITCHING_DELAY);
+    digitalWrite(GAUGE_PINS[i], LOW);
+    setGauge(&emptyGauge);
   }
 }
 
@@ -58,6 +61,8 @@ void iterateStartupData() {
     setGauge(&singleGauge);
     digitalWrite(GAUGE_PINS[i], HIGH);
     delay(GAUGE_SWITCHING_DELAY);
+    digitalWrite(GAUGE_PINS[i], LOW);
+    setGauge(&emptyGauge);
   }
 
   const int deltaTime = millis() - startTime;
@@ -80,6 +85,7 @@ void iterateStartupData() {
  * ###############
  */
 
+bool shouldSendRequests = true;
 bool shouldResetSequenceRunTime = false;
 int numSuccessConnected = 0;
 int numConnectionAttempts = 0;
@@ -95,12 +101,15 @@ void connectingSequence() {
 
 void afterConnectingSequence(int passedTime) {
    if (isWiFiConnected()) {
-     log("Connected!");
+     log("Connected with IP: " + WiFi.localIP().toString());
      disableIndicatorLED();
-     nextState = RUNNING;
    } else if (didWiFiConnectionFail()) {
      log("Failed to connect...");
      numConnectionAttempts++;
+   }
+
+   if (isWiFiConnected() && passedTime >= SEQUENCE_CONNECTING_MIN_TIME) {
+     nextState = RUNNING;
    }
 
    if (numConnectionAttempts >= MAX_CONNECTION_ATTEMPTS) {
@@ -121,29 +130,21 @@ void afterStartUpSequence(int passedTime) {
 }
 
 void runningSequence() {
+  if (!isWiFiConnected()) {
+    log("Connection lost.");
+    nextState = PAUSING;
+    return;
+  }
+  if (shouldSendRequests) {
+    sendAllRequests();
+  }
   iterateGaugesRequestData();
 }
 
 void afterRunningSequence(int passedTime) {
-  if (!isWiFiConnected()) {
-    log("Connection lost.");
-    nextState = CONNECTING;
-    return;
-  }
-  if(passedTime >= DATA_REFRESH_RATE) {
+  shouldSendRequests = passedTime >= DATA_REFRESH_RATE;
+  if (shouldSendRequests) {
     shouldResetSequenceRunTime = true;
-    RequestType type = Instances;
-    String url = URL_INSTANCES;
-    sendRequest(&url, &type);
-    type = Requests;
-    url = URL_REQUESTS_PER_MINUTE;
-    sendRequest(&url, &type);
-    type = CPU_EU;
-    url = URL_CPU_USAGE_EU;
-    sendRequest(&url, &type);
-    type = CPU_US;
-    url = URL_CPU_USAGE_US;
-    sendRequest(&url, &type);
   }
 }
 

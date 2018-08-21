@@ -37,49 +37,80 @@ bool didWiFiConnectionFail() {
 }
 
 void log(String message) {
-  Serial.println(message);
+  if (LOGGING_ENABLED) {
+    Serial.println(message);
+  }
 }
 
 byte gaugeDataFromRequests[NUM_GAUGES] = {0};
 void parseData(String *data, RequestType *type) {
-  log("Parsing data...");
   DynamicJsonBuffer  jsonBuffer(200);
   JsonObject& root = jsonBuffer.parseObject(*data);
   if (!root.success()) {
-    log("Failed to parse data");
+    log("Failed to parse data: " + String(*data));
     return;
   }
-  int values[NUM_GAUGE_SUBSECTIONS] = {0};
-  for (int i = 0; i < 2; i++) {
-    values[i] = root["data"]["result"][i]["value"][1];
-  }
+
   int offset = mapRequestTypeToGaugeDataOffset(type);
+
+  int numResultValues = 1;
+  if (*type == Instances || *type == Requests) {
+    numResultValues = 2;
+  }
+
+  double values[NUM_GAUGE_SUBSECTIONS] = {0};
+  for (int i = 0; i < NUM_GAUGE_SUBSECTIONS; i++) {
+    double result = root["data"]["result"][i]["value"][1];
+    if (i >= numResultValues) {
+      result = values[i-1];
+    }
+    values[i] = result;
+  }
+
   int valueOne = convertValueToGaugeValue(&values[0], type);
   int valueTwo = convertValueToGaugeValue(&values[1], type);
-  log("Parsed data successfully: " + String(valueOne) + "/" + String(valueTwo) + ", offset: " + String(offset));
   gaugeDataFromRequests[offset] = convertDataToGaugeValue(&valueOne, &valueTwo);
+}
 
+void sendRequest(String *url, RequestType *type) {
+  log("Sending request: " + *url);
+  HTTPClient http;
+  http.begin(*url);
+
+  int httpCode = http.GET();
+  if (httpCode > 0) {
+    String payload = http.getString();
+    parseData(&payload, type);
+  }else {
+    log(printf("HTTP GET failed, error: %s\n", http.errorToString(httpCode).c_str()));
+  }
+  http.end();
+}
+
+void printGaugeDataFromRequests() {
+  if (!LOGGING_ENABLED) {
+    return;
+  }
   String output = "";
   for (int i = 0; i < NUM_GAUGES; i++) {
-    output += String(gaugeDataFromRequests[i]) + ", ";
+    output += "0x"+String(gaugeDataFromRequests[i], HEX) + ", ";
   }
   log("Data: " + output);
 }
 
-void sendRequest(String *url, RequestType *type) {
-  log("Sending request...");
-  if (WiFi.status() == WL_CONNECTED) {
-    HTTPClient http;
-    http.begin(*url);
-    int httpCode = http.GET();
+void sendAllRequests() {
+  RequestType type = Instances;
+  String url = URL_INSTANCES;
+  sendRequest(&url, &type);
+  type = Requests;
+  url = URL_REQUESTS_PER_MINUTE;
+  sendRequest(&url, &type);
+  type = CPU_EU;
+  url = URL_CPU_USAGE_EU;
+  sendRequest(&url, &type);
+  type = CPU_US;
+  url = URL_CPU_USAGE_US;
+  sendRequest(&url, &type);
 
-    if (httpCode > 0) {
-      String payload = http.getString();
-      log("Received request data for: " + *url);
-      parseData(&payload, type);
-    }else {
-      log("Error sending request.");
-    }
-    http.end();
-  }
+  printGaugeDataFromRequests();
 }
